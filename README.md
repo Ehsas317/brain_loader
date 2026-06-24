@@ -11,6 +11,13 @@ Pure Python coordinator · Single hot-swap model slot · Adaptive planning loop.
 > 2. Qwen3 `<think>` token stripping missing from both parse methods
 > 3. `"FINAL" in output.upper()` check too broad — caused premature termination
 > 4. Telegram async used deprecated `get_event_loop()` pattern → `asyncio.run()`
+>
+> **Bugs fixed in this version (v3.1):**
+> 1. **Telegram markdown escaping** — goals with `_`, `*`, `` ` `` characters caused notification failures; all user-provided text is now escaped before sending
+> 2. **Constraints lost on resume** — `constraints` were not stored in `state.json`; resume now restores the original constraints
+> 3. **MLX emergency cleanup** — `mx.synchronize()` was not wrapped in `try/except`, which could prevent `mx.metal.clear_cache()` from running during emergency cleanup
+> 4. **Graceful shutdown** — added `SIGINT`/`SIGTERM` handlers that unload the model before exit (prevents model staying resident on Ctrl+C)
+> 5. **Extended reasoning tag stripping** — `_strip_thinking()` now handles `<thinking>`, `<thought>`, `<reasoning>`, and `[Thinking: ...]` blocks from various model families, not just Qwen3 `<think>`
 
 ---
 
