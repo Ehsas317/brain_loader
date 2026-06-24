@@ -28,6 +28,24 @@ from typing import List, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+# Reasoning tag patterns to strip from model outputs
+# Covers Qwen3 <think>, DeepSeek-R1 <thinking>, and other formats
+_REASONING_PATTERNS = [
+    (r"<think>.*?</think>", re.DOTALL),           # Qwen3
+    (r"<thinking>.*?</thinking>", re.DOTALL),      # DeepSeek-R1 and variants
+    (r"<thought>.*?</thought>", re.DOTALL),        # Some model variants
+    (r"<reasoning>.*?</reasoning>", re.DOTALL),    # Generic reasoning blocks
+    (r"\[Thinking:.*?\]", re.DOTALL),              # Bracket-style reasoning
+]
+
+
+def _strip_all_reasoning(text: str) -> str:
+    """Strip all known reasoning/thinking tags from model output."""
+    for pattern, flags in _REASONING_PATTERNS:
+        text = re.sub(pattern, "", text, flags=flags)
+    return text.strip()
+
+
 class Coordinator:
 
     def __init__(
@@ -46,11 +64,17 @@ class Coordinator:
     # STATE MANAGEMENT — state.json
     # ════════════════════════════════════════════════════════════════
 
-    def init_state(self, project_name: str, goal: str, task_names: List[str]) -> Dict:
-        """Create and save initial state.json. Returns the state dict."""
+    def init_state(self, project_name: str, goal: str, task_names: List[str],
+                   constraints: str = "") -> Dict:
+        """Create and save initial state.json. Returns the state dict.
+        
+        Args:
+            constraints: Hard constraints (stored for resume support).
+        """
         state = {
             "project_name": project_name,
             "goal": goal,
+            "constraints": constraints,
             "current_task_index": 1,
             "total_tasks": len(task_names),
             "status": "planning",
@@ -354,7 +378,7 @@ class Coordinator:
     def _strip_thinking(text: str) -> str:
         """
         Strip Qwen3 extended thinking tokens (<think>...</think>).
-        Must run before any regex parsing.
+        Kept for backward compat — _strip_all_reasoning is the full version.
         """
         return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
@@ -373,7 +397,7 @@ class Coordinator:
 
         Returns: (task_names, first_specialist, first_subtasks)
         """
-        output = self._strip_thinking(output)
+        output = _strip_all_reasoning(output)
 
         task_names: List[str] = []
         first_specialist = "coder"
@@ -424,7 +448,7 @@ class Coordinator:
 
         Returns: (summary, next_specialist, next_subtasks, is_final)
         """
-        output = self._strip_thinking(output)
+        output = _strip_all_reasoning(output)
 
         summary = "Task completed."
         next_specialist = "coder"
