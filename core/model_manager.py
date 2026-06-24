@@ -183,14 +183,19 @@ class MLXModelManager(BaseModelManager):
         )
 
     def _emergency_cleanup(self) -> None:
+        """Emergency cleanup — best-effort memory release when normal offload fails."""
         logger.critical("[MLX] Emergency cleanup!")
         self.model = None
         self.tokenizer = None
         self.config = None
         self._currently_loaded = None
         gc.collect()
+        # FIX: mx.synchronize() wrapped in try/except to ensure clear_cache always runs
         try:
             mx.synchronize()
+        except Exception:
+            pass
+        try:
             if hasattr(mx.metal, "clear_cache"):
                 mx.metal.clear_cache()
         except Exception:
