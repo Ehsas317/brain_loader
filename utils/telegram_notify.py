@@ -1,16 +1,30 @@
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  PORT   — FILE: utils/telegram_notify.py                                ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Port (formerly Brain Loader v3)
+# REPO:       https://github.com/Ehsas317/port
+# WHAT:       Portable, pure-Python, docks anywhere. MLX or Ollama.
+#             This is the one that actually travels.
+#
+# THIS FILE:
+#   Telegram Notifier — sends real-time build progress updates via Telegram.
+#   Get your bot token from @BotFather and configure in config.yaml.
+#
+# HOW TO USE PORT:
+#   1. Install:    pip install -r requirements_mlx.txt  # or requirements_ollama.txt
+#   2. Configure:  Edit config.yaml — set backend to "mlx" or "ollama"
+#   3. Run:        python main.py "Your project goal"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
 """
-Telegram Notification Utility
+Port — Telegram Notifier
 
-Sends project progress updates to your phone.
-
-Setup:
-  1. Message @BotFather on Telegram → create a bot → copy the token
-  2. Message @userinfobot on Telegram → copy your chat_id
-  3. Add both to config.yaml under telegram:
-
-     telegram:
-       token: "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
-       chat_id: "123456789"
+Sends real-time build progress updates via Telegram.
 """
 
 import asyncio
@@ -28,6 +42,16 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
+    """
+    Port Telegram Notifier
+
+    Sends build progress updates to a Telegram chat.
+    Requires a bot token (from @BotFather) and chat ID.
+
+    Usage:
+        notifier = TelegramNotifier(token="...", chat_id="...")
+        notifier.send("🐳 Port starting...")
+    """
 
     def __init__(self, token: str, chat_id: str):
         if not TELEGRAM_AVAILABLE:
@@ -41,10 +65,7 @@ class TelegramNotifier:
         logger.info("[Telegram] Initialized for chat_id %s", chat_id)
 
     def send(self, message: str) -> bool:
-        """
-        Send a Markdown-formatted message.
-        Uses asyncio.run() — safe in any context (threads, scripts, etc).
-        """
+        """Send a Markdown-formatted message."""
         if len(message) > 4000:
             message = message[:3997] + "..."
         try:
