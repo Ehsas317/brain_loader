@@ -1,11 +1,32 @@
-# Brain Loader v3 — Configuration
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  PORT   — FILE: config.yaml                                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Port (formerly Brain Loader v3)
+# REPO:       https://github.com/Ehsas317/port
+# WHAT:       Portable, pure-Python, docks anywhere. MLX or Ollama.
+#             This is the one that actually travels.
+#
+# THIS FILE:
+#   Configuration for the Port orchestrator. Set your backend (mlx/ollama),
+#   model paths, and Telegram credentials.
+#
+# HOW TO USE PORT:
+#   1. Install:    pip install -r requirements_mlx.txt  # or requirements_ollama.txt
+#   2. Configure:  Set backend, model paths, and tokens below
+#   3. Run:        python main.py "Your project goal"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Port Configuration
 # ─────────────────────────────────────────────────────────────────
 # STEP 1: Set your backend
 # ─────────────────────────────────────────────────────────────────
 backend: "mlx"           # CHANGE: "mlx" (Apple Silicon) or "ollama" (any system)
 
 project:
-  name: "brain_loader_v3"
+  name: "port"
   outputs_dir: "./outputs"
   memory_file: "./memory.md"
   state_file: "./state.json"

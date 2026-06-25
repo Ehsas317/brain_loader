@@ -1,6 +1,30 @@
 #!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  PORT   — FILE: main.py                                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Port (formerly Brain Loader v3)
+# REPO:       https://github.com/Ehsas317/port
+# WHAT:       Portable, pure-Python, docks anywhere. MLX or Ollama.
+#             This is the one that actually travels.
+#
+# THIS FILE:
+#   Entry point for the Port multi-backend agentic AI orchestrator.
+#   Supports both MLX (Apple Silicon) and Ollama (any system) backends.
+#
+# HOW TO USE PORT:
+#   1. Install:    pip install -r requirements_mlx.txt  # or requirements_ollama.txt
+#   2. Configure:  Edit config.yaml — set backend to "mlx" or "ollama"
+#   3. Run:        python main.py "Your project goal"
+#
+# HARDWARE TARGET: MacBook Pro M1 Max 32GB (MLX) or any system with Ollama
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
 """
-Brain Loader v3 — Entry Point
+Port — Main Entry Point
 
 Usage:
     python main.py "Build a React Native fitness app with AI meal planner"
@@ -8,6 +32,8 @@ Usage:
     python main.py --resume
     python main.py --list-specialists
     python main.py --config path/to/config.yaml "My goal"
+
+Supports: MLX (Apple Silicon) and Ollama (any system)
 """
 
 import os
@@ -18,7 +44,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.orchestrator import BrainOrchestrator
+from core.orchestrator import PortOrchestrator
 
 
 def setup_logging() -> Path:
@@ -26,7 +52,7 @@ def setup_logging() -> Path:
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     import datetime
-    log_file = logs_dir / f"brain_loader_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = logs_dir / f"port_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -44,7 +70,7 @@ def setup_logging() -> Path:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Brain Loader v3 — Local Agentic AI")
+    parser = argparse.ArgumentParser(description="Port — Portable Agentic AI")
     parser.add_argument("goal", nargs="?", help="Project goal / idea")
     parser.add_argument("--constraints", default="", help="Hard constraints (e.g. 'Must use TypeScript')")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
@@ -60,11 +86,11 @@ def main():
         sys.exit(1)
 
     logger.info("=" * 70)
-    logger.info("BRAIN LOADER v3")
+    logger.info("PORT — Portable Agentic AI")
     logger.info("Config: %s", args.config)
     logger.info("=" * 70)
 
-    orchestrator = BrainOrchestrator(config_path=args.config)
+    orchestrator = PortOrchestrator(config_path=args.config)
 
     if args.list_specialists:
         print("\nAvailable Specialists:")
@@ -85,7 +111,7 @@ def main():
         logger.info("Starting: %s", args.goal)
         orchestrator.run(goal=args.goal, constraints=args.constraints)
     else:
-        print("\nBrain Loader v3")
+        print("\n🐳 Port — Portable Agentic AI")
         print("=" * 50)
         print("What do you want to build or research?")
         print("Example: 'A SaaS dashboard with real-time analytics'")
