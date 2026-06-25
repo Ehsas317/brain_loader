@@ -1,8 +1,30 @@
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  PORT   — FILE: core/model_manager.py                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Port (formerly Brain Loader v3)
+# REPO:       https://github.com/Ehsas317/port
+# WHAT:       Portable, pure-Python, docks anywhere. MLX or Ollama.
+#             This is the one that actually travels.
+#
+# THIS FILE:
+#   Model Manager — dual backend support for MLX (Apple Silicon) and
+#   Ollama (any system). Abstract base with concrete implementations.
+#
+# HOW TO USE PORT:
+#   1. Install:    pip install -r requirements_mlx.txt  # or requirements_ollama.txt
+#   2. Configure:  Edit config.yaml — set backend to "mlx" or "ollama"
+#   3. Run:        python main.py "Your project goal"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
 """
-Model Manager v3 — Dual Backend
+Port — Model Manager (Dual Backend)
 
 Provides an abstract BaseModelManager with two implementations:
-
   MLXModelManager   — Apple Silicon (mlx-lm). Precise unified-memory control.
   OllamaModelManager — Any system with Ollama. Ollama manages its own memory pool.
 
@@ -190,8 +212,6 @@ class MLXModelManager(BaseModelManager):
         self.config = None
         self._currently_loaded = None
         gc.collect()
-        # FIX BUG-V3-003: Guard mx.synchronize() and mx.metal against NameError
-        # in case MLX failed to import (mx doesn't exist).
         if MLX_AVAILABLE:
             try:
                 mx.synchronize()
@@ -220,9 +240,6 @@ class OllamaModelManager(BaseModelManager):
 
     Tip: run `ollama ps` to see what's currently loaded.
     Tip: run `ollama serve` to start the server if it's not running.
-
-    Model names use Ollama's naming: "qwen3:32b", "qwen2.5-coder:7b", etc.
-    Pull a model first: ollama pull qwen3:32b
     """
 
     def __init__(self, host: str = "http://localhost:11434", gc_sleep: float = 2.0):
@@ -255,22 +272,19 @@ class OllamaModelManager(BaseModelManager):
         self.config = config
         self._currently_loaded = config.path
         self._total_swaps += 1
-        # Ollama lazy-loads on first generate() call.
-        # No explicit warmup needed — the 600s timeout in generate() handles it.
 
     def offload(self) -> None:
         if not self._currently_loaded:
             return
         logger.info("[Ollama] Unloading: %s", self._currently_loaded)
         try:
-            # keep_alive=0 forces Ollama to evict the model from memory
             requests.post(
                 f"{self.host}/api/generate",
                 json={"model": self._currently_loaded, "prompt": "", "keep_alive": 0},
                 timeout=30,
             )
         except Exception as e:
-            logger.warning("[Ollama] Offload request failed (model may still be in memory): %s", e)
+            logger.warning("[Ollama] Offload request failed: %s", e)
         self._currently_loaded = None
         self.config = None
         time.sleep(self.gc_sleep)
@@ -294,20 +308,20 @@ class OllamaModelManager(BaseModelManager):
                     "model": self._currently_loaded,
                     "prompt": prompt,
                     "stream": False,
-                    "keep_alive": -1,  # keep in memory between calls
+                    "keep_alive": -1,
                     "options": {
                         "temperature": temp,
                         "num_predict": tokens,
                     },
                 },
-                timeout=600,  # long: model may need to load from disk on first call
+                timeout=600,
             )
             r.raise_for_status()
             return r.json()["response"]
         except requests.exceptions.Timeout:
             raise RuntimeError(
                 "[Ollama] Generation timed out after 600 s. "
-                "Model may be too large or system too slow. Try a smaller model."
+                "Model may be too large or system too slow."
             )
         except Exception as e:
             raise RuntimeError(f"[Ollama] Generation failed: {e}")
