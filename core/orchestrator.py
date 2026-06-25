@@ -11,6 +11,7 @@ The orchestrator only sequences calls.
 """
 
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -31,8 +32,10 @@ def _escape_tg_markdown(text: str) -> str:
     """
     if not text:
         return text
-    # Escape characters that Telegram Markdown v1 treats as formatting
-    for char in ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"]:
+    # Escape characters that Telegram Markdown v1 treats as formatting.
+    # FIX BUG-V3-002: Removed "." and "!" — they are NOT Telegram Markdown
+    # special characters and escaping them corrupts file paths like output.md
+    for char in ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}"]:
         text = text.replace(char, f"\\{char}")
     return text
 
@@ -107,7 +110,10 @@ class BrainOrchestrator:
         except Exception as e:
             logger.warning("[Orchestrator] Shutdown cleanup error: %s", e)
         self._notify(f"⚠️ Brain Loader v3 stopped ({sig_name}). Model unloaded.")
-        sys.exit(128 + signum)
+        # FIX BUG-V3-001: Use os._exit() instead of sys.exit() to prevent
+        # SystemExit from triggering __del__ destructors during signal handling,
+        # which could cause double-free or crash while model is being unloaded.
+        os._exit(128 + signum)
 
     # ════════════════════════════════════════════════════════════════
     # Public API
