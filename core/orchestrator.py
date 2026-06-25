@@ -1,5 +1,28 @@
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  PORT   — FILE: core/orchestrator.py                                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Port (formerly Brain Loader v3)
+# REPO:       https://github.com/Ehsas317/port
+# WHAT:       Portable, pure-Python, docks anywhere. MLX or Ollama.
+#             This is the one that actually travels.
+#
+# THIS FILE:
+#   Port Orchestrator — wires together ModelManager + Coordinator.
+#   Drives the full execution loop. Zero reasoning responsibility.
+#
+# HOW TO USE PORT:
+#   1. Install:    pip install -r requirements_mlx.txt  # or requirements_ollama.txt
+#   2. Configure:  Edit config.yaml — set backend to "mlx" or "ollama"
+#   3. Run:        python main.py "Your project goal"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
 """
-Brain Orchestrator v3
+Port — Orchestrator
 
 Wires together: ModelManager + Coordinator.
 Drives the full execution loop.
@@ -26,21 +49,25 @@ logger = logging.getLogger(__name__)
 
 
 def _escape_tg_markdown(text: str) -> str:
-    """
-    Escape Telegram Markdown special characters in user-provided text.
-    Prevents Broken notifications when goal/task names contain _, *, or `.
-    """
+    """Escape Telegram Markdown special characters in user-provided text."""
     if not text:
         return text
-    # Escape characters that Telegram Markdown v1 treats as formatting.
-    # FIX BUG-V3-002: Removed "." and "!" — they are NOT Telegram Markdown
-    # special characters and escaping them corrupts file paths like output.md
     for char in ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}"]:
         text = text.replace(char, f"\\{char}")
     return text
 
 
-class BrainOrchestrator:
+class PortOrchestrator:
+    """
+    Port Orchestrator
+
+    Wires ModelManager and Coordinator together.
+    Handles graceful shutdown, resume, and Telegram notifications.
+
+    Usage:
+        orch = PortOrchestrator(config_path="config.yaml")
+        orch.run("Build a fitness app")
+    """
 
     def __init__(self, config_path: str = "config.yaml"):
         with open(config_path, "r") as f:
@@ -48,7 +75,6 @@ class BrainOrchestrator:
 
         self.backend: str = self.config.get("backend", "mlx")
 
-        # Create the right model manager based on backend
         mem_cfg = self.config.get("memory", {})
         if self.backend == "mlx":
             self.model_mgr: BaseModelManager = create_model_manager(
@@ -65,7 +91,6 @@ class BrainOrchestrator:
         else:
             raise ValueError(f"Unknown backend: '{self.backend}'. Use 'mlx' or 'ollama'.")
 
-        # Pure Python coordinator
         proj = self.config["project"]
         self.coord = Coordinator(
             outputs_dir=proj["outputs_dir"],
@@ -73,7 +98,6 @@ class BrainOrchestrator:
             state_file=proj["state_file"],
         )
 
-        # Load model configs for the active backend
         brain_key = f"brain_{self.backend}"
         specialists_key = f"specialists_{self.backend}"
 
@@ -89,15 +113,11 @@ class BrainOrchestrator:
         }
 
         self._telegram = None
-
-        # Register graceful shutdown handler (Ctrl+C / SIGTERM)
         self._shutdown_requested = False
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-        logger.info("[Orchestrator] v3 ready. Backend: %s", self.backend)
-        logger.info("[Orchestrator] Brain: %s", self.brain_config.path)
-        logger.info("[Orchestrator] Specialists: %s", list(self.specialist_configs.keys()))
+        logger.info("[Orchestrator] Port ready. Backend: %s", self.backend)
 
     def _signal_handler(self, signum, frame) -> None:
         """Handle Ctrl+C / SIGTERM by unloading model and exiting cleanly."""
@@ -109,19 +129,12 @@ class BrainOrchestrator:
             logger.info("[Orchestrator] Model unloaded successfully.")
         except Exception as e:
             logger.warning("[Orchestrator] Shutdown cleanup error: %s", e)
-        self._notify(f"⚠️ Brain Loader v3 stopped ({sig_name}). Model unloaded.")
-        # FIX BUG-V3-001: Use os._exit() instead of sys.exit() to prevent
-        # SystemExit from triggering __del__ destructors during signal handling,
-        # which could cause double-free or crash while model is being unloaded.
+        self._notify(f"⚠️ Port stopped ({sig_name}). Model unloaded.")
         os._exit(128 + signum)
-
-    # ════════════════════════════════════════════════════════════════
-    # Public API
-    # ════════════════════════════════════════════════════════════════
 
     def run(self, goal: str, constraints: str = "", resume: bool = False) -> None:
         safe_goal = _escape_tg_markdown(goal)
-        self._notify(f"🧠 Brain Loader v3 Started\nBackend: {self.backend}\nGoal: _{safe_goal}_")
+        self._notify(f"🐳 Port Started\nBackend: {self.backend}\nGoal: _{safe_goal}_")
 
         if resume:
             state = self.coord.load_state()
@@ -135,10 +148,6 @@ class BrainOrchestrator:
         else:
             self._start_new_project(goal, constraints)
 
-    # ════════════════════════════════════════════════════════════════
-    # Execution
-    # ════════════════════════════════════════════════════════════════
-
     def _start_new_project(self, goal: str, constraints: str) -> None:
         logger.info("[Orchestrator] New project: %s", goal)
         self._notify("📝 Brain creating master plan...")
@@ -151,8 +160,6 @@ class BrainOrchestrator:
         logger.info("[Orchestrator] %d tasks created.", len(task_names))
         self._notify(f"📋 Master plan: *{len(task_names)}* tasks created.")
 
-        # Coordinator initializes state and memory (pure Python, no LLM)
-        # FIX: Store constraints in state.json for resume support
         state = self.coord.init_state(
             self.config["project"]["name"],
             goal,
@@ -185,20 +192,14 @@ class BrainOrchestrator:
             self._execute_single_task(state, next_task)
 
     def _execute_single_task(self, state: Dict, task: Dict) -> None:
-        """
-        Full cycle for one task:
-          1. Load Specialist → execute → write output → unload
-          2. Load Brain → review output → update memory → verify integrity → unload
-        """
+        """Full cycle for one task: Specialist executes, Brain reviews."""
         task_id = task["id"]
         task_name = task["name"]
 
-        # Coordinator parses specialist assignment from memory.md
         mem_info = self.coord.get_current_task_info()
         specialist_key = mem_info.get("specialist", "coder").lower()
         subtasks = mem_info.get("subtasks", [])
 
-        # Validate specialist key
         if specialist_key not in self.specialist_configs:
             logger.warning(
                 "[Orchestrator] Unknown specialist '%s' — falling back to 'coder'.", specialist_key
@@ -217,7 +218,7 @@ class BrainOrchestrator:
             f"Specialist: `{specialist_key}`"
         )
 
-        # ── PHASE A: Specialist executes ──────────────────────────────
+        # PHASE A: Specialist executes
         specialist_config = self.specialist_configs[specialist_key]
         self.model_mgr.load(specialist_config)
 
@@ -236,7 +237,7 @@ class BrainOrchestrator:
         self.coord.mark_task_done(state, task_id, output_file)
         self.model_mgr.offload()
 
-        # ── PHASE B: Brain reviews and plans next ─────────────────────
+        # PHASE B: Brain reviews and plans next
         self._notify(f"🧠 Brain reviewing Task {task_id}...")
 
         self.model_mgr.load(self.brain_config)
@@ -275,10 +276,9 @@ class BrainOrchestrator:
             next_subtasks=next_subtasks if has_next else None,
         )
 
-        # COORDINATOR RULE #5: Halt if memory.md is corrupt
         if not self.coord.verify_memory_integrity():
             self._notify("🚨 CRITICAL: memory.md integrity check FAILED. Halting.")
-            raise RuntimeError("Memory integrity check failed. Inspect memory.md and state.json before retrying.")
+            raise RuntimeError("Memory integrity check failed.")
 
         self.model_mgr.offload()
         safe_summary = _escape_tg_markdown(summary[:100])
@@ -308,17 +308,10 @@ class BrainOrchestrator:
         self.model_mgr.shutdown()
 
         safe_goal = _escape_tg_markdown(state["goal"])
-        safe_outdir = _escape_tg_markdown(str(self.coord.outputs_dir.absolute()))
         self._notify(
             f"🎉 *PROJECT COMPLETE!*\n\n"
             f"Goal: _{safe_goal}_\n"
-            f"Tasks completed: {state['total_tasks']}\n\n"
-            f"📂 Outputs:\n"
-            f"`{safe_outdir}`\n\n"
-            f"• `memory.md` — Full project history\n"
-            f"• `state.json` — Execution log\n"
-            f"• `task_NNN_*.md` — Individual task outputs\n"
-            f"• `FINAL_ANSWER.md` — Synthesized result"
+            f"Tasks completed: {state['total_tasks']}"
         )
         logger.info("[Orchestrator] Complete. Final answer: %s", final_file)
 
@@ -345,15 +338,10 @@ class BrainOrchestrator:
         """Resume from state.json + memory.md checkpoint."""
         if not self.coord.verify_memory_integrity():
             raise RuntimeError("Cannot resume — memory.md is corrupt or missing.")
-        # Restore constraints from state if available (Bug fix: constraints were previously lost)
         constraints = state.get("constraints", "")
         if constraints:
             logger.info("[Orchestrator] Restored constraints: %s", constraints)
         self._execute_task_loop(state)
-
-    # ════════════════════════════════════════════════════════════════
-    # Helpers
-    # ════════════════════════════════════════════════════════════════
 
     def _make_config(self, role: str, cfg: dict, key: str = "") -> ModelConfig:
         return ModelConfig(
@@ -369,7 +357,7 @@ class BrainOrchestrator:
         """Send Telegram notification. Silently skips if not configured."""
         tg = self.config.get("telegram", {})
         if not tg.get("token") or not tg.get("chat_id"):
-            return  # Telegram not configured — skip silently
+            return
 
         if self._telegram is None:
             try:
