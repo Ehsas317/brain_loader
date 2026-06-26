@@ -1,212 +1,128 @@
-#!/usr/bin/env python3
-#
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  PORT   — FILE: core/model_manager.py                                   ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-#
-# PROJECT:    Port (formerly Brain Loader v3)
-# REPO:       https://github.com/Ehsas317/port
-# WHAT:       Portable, pure-Python, docks anywhere. MLX or Ollama.
-#             This is the one that actually travels.
-#
-# THIS FILE:
-#   Model Manager — dual backend support for MLX (Apple Silicon) and
-#   Ollama (any system). Abstract base with concrete implementations.
-#
-# HOW TO USE PORT:
-#   1. Install:    pip install -r requirements_mlx.txt  # or requirements_ollama.txt
-#   2. Configure:  Edit config.yaml — set backend to "mlx" or "ollama"
-#   3. Run:        python main.py "Your project goal"
-#
-# ═══════════════════════════════════════════════════════════════════════════
-#
-
 """
-Port — Model Manager (Dual Backend)
+Forge Model Manager v3 — Dual Backend (MLX + Ollama)
 
-Provides an abstract BaseModelManager with two implementations:
-  MLXModelManager   — Apple Silicon (mlx-lm). Precise unified-memory control.
-  OllamaModelManager — Any system with Ollama. Ollama manages its own memory pool.
+Manages the lifecycle of LLM models with support for:
+- MLX backend (Apple Silicon via Metal GPU)
+- Ollama backend (any OS, CPU/GPU)
 
-Use the factory:
-    manager = create_model_manager("mlx",   gc_sleep=2.0)
-    manager = create_model_manager("ollama", host="http://localhost:11434")
+Single model slot: only one model loaded at a time.
+RAM-aware: estimates usage before loading.
 """
+
+from __future__ import annotations
 
 import gc
-import time
+import json
 import logging
-import requests
+import os
+import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("forge.model_manager")
 
 # ─────────────────────────────────────────────────────────────────
-# Try importing MLX — only available on Apple Silicon
+# MLX availability check (Apple Silicon only)
 # ─────────────────────────────────────────────────────────────────
+MLX_AVAILABLE = False
 try:
     import mlx.core as mx
     from mlx_lm import load as mlx_load, generate as mlx_generate
     MLX_AVAILABLE = True
 except ImportError:
-    MLX_AVAILABLE = False
+    logger.info("MLX not available — using Ollama backend only")
 
 
-# ─────────────────────────────────────────────────────────────────
-# Shared config dataclass
-# ─────────────────────────────────────────────────────────────────
 @dataclass
 class ModelConfig:
-    path: str
-    max_tokens: int
-    temperature: float
+    """Configuration for a single model."""
+    name: str
     description: str
+    path: str
     ram_estimate_gb: float
-    role: str  # "brain" or "specialist"
+    max_tokens: int = 4096
+    temperature: float = 0.7
+    backend: str = "mlx"  # "mlx" or "ollama"
 
 
 # ─────────────────────────────────────────────────────────────────
-# Abstract base — all backends implement this interface
+# Abstract Base Model Manager
 # ─────────────────────────────────────────────────────────────────
 class BaseModelManager(ABC):
-    """
-    Abstract model manager.
-    Every backend must implement load(), offload(), generate().
-    The coordinator calls exactly these three methods.
-    """
+    """Abstract base for all model managers."""
 
     @abstractmethod
-    def load(self, config: ModelConfig) -> None:
-        """Load a model. Must unload any existing model first."""
+    def load(self, model_key: str, config: ModelConfig) -> bool:
+        """Load a model. Returns True on success."""
         ...
 
     @abstractmethod
-    def offload(self) -> None:
+    def unload(self) -> None:
         """Unload current model and free memory."""
         ...
 
     @abstractmethod
-    def generate(self, prompt: str,
-                 max_tokens: Optional[int] = None,
-                 temperature: Optional[float] = None) -> str:
-        """Generate text with the currently loaded model."""
+    def generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        """Generate text from prompt."""
         ...
 
-    def get_status(self) -> Dict[str, Any]:
-        return {
-            "loaded": getattr(self, "_currently_loaded", None),
-            "total_swaps": getattr(self, "_total_swaps", 0),
-        }
+    @abstractmethod
+    def is_loaded(self) -> bool:
+        """Check if a model is currently loaded."""
+        ...
 
-    def shutdown(self) -> None:
-        """Graceful shutdown."""
-        self.offload()
+    @abstractmethod
+    def get_memory_usage(self) -> Dict[str, float]:
+        """Get current memory usage stats."""
+        ...
 
 
 # ─────────────────────────────────────────────────────────────────
-# MLX Backend — Apple Silicon only
+# MLX Backend — Apple Silicon
 # ─────────────────────────────────────────────────────────────────
 class MLXModelManager(BaseModelManager):
-    """
-    MLX backend for Apple Silicon (M1/M2/M3/M4).
+    """MLX model manager for Apple Silicon."""
 
-    Loads models via mlx-lm from a HuggingFace repo (locally cached).
-    Explicit load/offload gives precise control over unified memory.
-
-    Models: https://huggingface.co/mlx-community
-    Download: huggingface-cli download mlx-community/<model-name>
-    """
-
-    def __init__(self, gc_sleep: float = 2.0, aggressive_cleanup: bool = True):
-        if not MLX_AVAILABLE:
-            raise ImportError(
-                "mlx and mlx-lm not installed.\n"
-                "  pip install mlx mlx-lm\n"
-                "Requires Apple Silicon."
-            )
-        self.gc_sleep = gc_sleep
-        self.aggressive_cleanup = aggressive_cleanup
-
-        self.model = None
-        self.tokenizer = None
-        self.config: Optional[ModelConfig] = None
-        self._currently_loaded: Optional[str] = None
-        self._total_swaps: int = 0
-
-        logger.info("[MLX] Initialized. Single-slot, Apple Silicon.")
-
-    def load(self, config: ModelConfig) -> None:
-        if self.model is not None:
-            self.offload()
-        logger.info("[MLX] Loading: %s (est. %.1f GB)", config.path, config.ram_estimate_gb)
-        try:
-            self.model, self.tokenizer = mlx_load(config.path)
-            self.config = config
-            self._currently_loaded = config.path
-            self._total_swaps += 1
-            logger.info("[MLX] Loaded: %s", config.path)
-        except Exception as e:
-            logger.critical("[MLX] Load failed: %s | %s", config.path, e)
-            self._emergency_cleanup()
-            raise
-
-    def offload(self) -> None:
-        if self.model is None:
-            return
-        name = self.config.path if self.config else "unknown"
-        logger.info("[MLX] Offloading: %s", name)
-
-        del self.model
-        del self.tokenizer
+    def __init__(self):
         self.model = None
         self.tokenizer = None
         self.config = None
         self._currently_loaded = None
 
-        for _ in range(3):
-            gc.collect()
+    def load(self, model_key: str, config: ModelConfig) -> bool:
+        if not MLX_AVAILABLE:
+            logger.error("MLX not available — cannot load %s", model_key)
+            return False
 
+        if self._currently_loaded == model_key:
+            logger.info("[MLX] Model %s already loaded", model_key)
+            return True
+
+        self.unload()
+
+        if not Path(config.path).exists():
+            logger.error("[MLX] Model path not found: %s", config.path)
+            return False
+
+        logger.info("[MLX] Loading %s (%.1f GB est.)...", model_key, config.ram_estimate_gb)
         try:
-            mx.synchronize()
+            self.model, self.tokenizer = mlx_load(config.path)
+            self.config = config
+            self._currently_loaded = model_key
+            logger.info("[MLX] %s loaded successfully", model_key)
+            return True
         except Exception as e:
-            logger.warning("[MLX] mx.synchronize() warning: %s", e)
+            logger.error("[MLX] Failed to load %s: %s", model_key, e)
+            return False
 
-        if self.aggressive_cleanup:
-            try:
-                if hasattr(mx.metal, "clear_cache"):
-                    mx.metal.clear_cache()
-                    logger.info("[MLX] Metal cache cleared.")
-                elif hasattr(mx, "clear_cache"):
-                    mx.clear_cache()
-            except Exception as e:
-                logger.debug("[MLX] Cache clear note: %s", e)
+    def unload(self) -> None:
+        if self._currently_loaded is None:
+            return
 
-        logger.info("[MLX] Sleeping %.1f s for memory settlement...", self.gc_sleep)
-        time.sleep(self.gc_sleep)
-        logger.info("[MLX] Offload complete.")
-
-    def generate(self, prompt: str,
-                 max_tokens: Optional[int] = None,
-                 temperature: Optional[float] = None) -> str:
-        if self.model is None:
-            raise RuntimeError("[MLX] No model loaded. Call load() first.")
-        tokens = max_tokens or self.config.max_tokens
-        temp = temperature if temperature is not None else self.config.temperature
-        logger.info("[MLX] Generating: max_tokens=%d, temp=%.2f", tokens, temp)
-        return mlx_generate(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            prompt=prompt,
-            max_tokens=tokens,
-            temp=temp,
-            verbose=False,
-        )
-
-    def _emergency_cleanup(self) -> None:
-        """Emergency cleanup — best-effort memory release when normal offload fails."""
-        logger.critical("[MLX] Emergency cleanup!")
+        logger.info("[MLX] Unloading %s...", self._currently_loaded)
         self.model = None
         self.tokenizer = None
         self.config = None
@@ -215,142 +131,173 @@ class MLXModelManager(BaseModelManager):
         if MLX_AVAILABLE:
             try:
                 mx.synchronize()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[MLX] mx.synchronize() failed during unload: %s", e)
             try:
                 if hasattr(mx.metal, "clear_cache"):
                     mx.metal.clear_cache()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[MLX] clear_cache failed during unload: %s", e)
         time.sleep(5)
+
+    def generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        if not self.is_loaded():
+            raise RuntimeError("No model loaded. Call load() first.")
+
+        max_tokens = max_tokens or self.config.max_tokens
+
+        try:
+            result = mlx_generate(
+                self.model,
+                self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temp=self.config.temperature,
+                verbose=False,
+            )
+            return result
+        except Exception as e:
+            logger.error("[MLX] Generation failed: %s", e)
+            raise
+
+    def is_loaded(self) -> bool:
+        return self._currently_loaded is not None
+
+    def get_memory_usage(self) -> Dict[str, float]:
+        if not MLX_AVAILABLE:
+            return {"active_gb": 0, "peak_gb": 0}
+        try:
+            active = mx.metal.get_active_memory() / 1e9
+            peak = mx.metal.get_peak_memory() / 1e9
+            return {"active_gb": active, "peak_gb": peak}
+        except Exception as e:
+            logger.warning("[MLX] Failed to get memory usage: %s", e)
+            return {"active_gb": 0, "peak_gb": 0}
 
 
 # ─────────────────────────────────────────────────────────────────
 # Ollama Backend — Any system
 # ─────────────────────────────────────────────────────────────────
 class OllamaModelManager(BaseModelManager):
-    """
-    Ollama backend. Works on any system with Ollama installed.
-    https://ollama.com
+    """Ollama model manager for any OS."""
 
-    Memory management:
-      Ollama manages its own memory pool.
-      offload() sends keep_alive=0 which forces the model out of RAM/VRAM.
-      generate() sends keep_alive=-1 (keep in memory between calls).
-
-    Tip: run `ollama ps` to see what's currently loaded.
-    Tip: run `ollama serve` to start the server if it's not running.
-    """
-
-    def __init__(self, host: str = "http://localhost:11434", gc_sleep: float = 2.0):
-        self.host = host.rstrip("/")
-        self.gc_sleep = gc_sleep
-        self.config: Optional[ModelConfig] = None
-        self._currently_loaded: Optional[str] = None
-        self._total_swaps: int = 0
-        logger.info("[Ollama] Initialized. Host: %s", self.host)
-        self._check_connection()
-
-    def _check_connection(self) -> None:
-        """Verify Ollama is reachable and log available models."""
-        try:
-            r = requests.get(f"{self.host}/api/tags", timeout=5)
-            r.raise_for_status()
-            models = [m["name"] for m in r.json().get("models", [])]
-            logger.info("[Ollama] Connected. Available models: %s", models)
-        except Exception as e:
-            logger.warning(
-                "[Ollama] Cannot connect to Ollama at %s: %s\n"
-                "         Make sure Ollama is running: ollama serve",
-                self.host, e,
-            )
-
-    def load(self, config: ModelConfig) -> None:
-        if self._currently_loaded and self._currently_loaded != config.path:
-            self.offload()
-        logger.info("[Ollama] Active model set: %s", config.path)
-        self.config = config
-        self._currently_loaded = config.path
-        self._total_swaps += 1
-
-    def offload(self) -> None:
-        if not self._currently_loaded:
-            return
-        logger.info("[Ollama] Unloading: %s", self._currently_loaded)
-        try:
-            requests.post(
-                f"{self.host}/api/generate",
-                json={"model": self._currently_loaded, "prompt": "", "keep_alive": 0},
-                timeout=30,
-            )
-        except Exception as e:
-            logger.warning("[Ollama] Offload request failed: %s", e)
-        self._currently_loaded = None
+    def __init__(self, host: str = "http://localhost:11434"):
+        self.host = host
         self.config = None
-        time.sleep(self.gc_sleep)
-        logger.info("[Ollama] Offload complete.")
+        self._currently_loaded = None
 
-    def generate(self, prompt: str,
-                 max_tokens: Optional[int] = None,
-                 temperature: Optional[float] = None) -> str:
-        if not self._currently_loaded:
-            raise RuntimeError("[Ollama] No model set. Call load() first.")
-        tokens = max_tokens or self.config.max_tokens
-        temp = temperature if temperature is not None else self.config.temperature
-        logger.info(
-            "[Ollama] Generating: model=%s, max_tokens=%d, temp=%.2f",
-            self._currently_loaded, tokens, temp,
-        )
+    def load(self, model_key: str, config: ModelConfig) -> bool:
+        # Ollama manages loading internally — just verify it's available
+        if self._is_model_available(config.path):
+            self.config = config
+            self._currently_loaded = model_key
+            logger.info("[Ollama] Model %s is available", model_key)
+            return True
+        logger.error("[Ollama] Model %s not available. Run: ollama pull %s",
+                     config.path, config.path)
+        return False
+
+    def unload(self) -> None:
+        if self._currently_loaded:
+            logger.info("[Ollama] Unloading %s...", self._currently_loaded)
+            self._currently_loaded = None
+            self.config = None
+
+    def generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        if not self.is_loaded():
+            raise RuntimeError("No model loaded. Call load() first.")
+
+        import requests
+
+        max_tokens = max_tokens or self.config.max_tokens
+
         try:
-            r = requests.post(
+            resp = requests.post(
                 f"{self.host}/api/generate",
                 json={
-                    "model": self._currently_loaded,
+                    "model": self.config.path,
                     "prompt": prompt,
                     "stream": False,
-                    "keep_alive": -1,
-                    "options": {
-                        "temperature": temp,
-                        "num_predict": tokens,
-                    },
+                    "options": {"temperature": self.config.temperature, "num_predict": max_tokens},
                 },
-                timeout=600,
+                timeout=300,
             )
-            r.raise_for_status()
-            return r.json()["response"]
-        except requests.exceptions.Timeout:
-            raise RuntimeError(
-                "[Ollama] Generation timed out after 600 s. "
-                "Model may be too large or system too slow."
-            )
+            resp.raise_for_status()
+            return resp.json().get("response", "")
         except Exception as e:
-            raise RuntimeError(f"[Ollama] Generation failed: {e}")
+            logger.error("[Ollama] Generation failed: %s", e)
+            raise
+
+    def is_loaded(self) -> bool:
+        return self._currently_loaded is not None
+
+    def get_memory_usage(self) -> Dict[str, float]:
+        # Ollama manages its own memory
+        return {"active_gb": 0, "peak_gb": 0}
+
+    def _is_model_available(self, model_name: str) -> bool:
+        import requests
+        try:
+            resp = requests.get(f"{self.host}/api/tags", timeout=10)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+            return any(m.get("name") == model_name for m in models)
+        except Exception as e:
+            logger.warning("[Ollama] Failed to check model availability: %s", e)
+            return False
 
 
 # ─────────────────────────────────────────────────────────────────
-# Factory
+# Unified Model Manager — Single hot-swap slot
 # ─────────────────────────────────────────────────────────────────
-def create_model_manager(backend: str, **kwargs) -> BaseModelManager:
+class ForgeModelManager:
     """
-    Create a model manager for the specified backend.
+    Unified model manager with single hot-swap slot.
+    Only one model in RAM at a time — load/unload automatically.
+    """
 
-    Args:
-        backend: "mlx" or "ollama"
-        **kwargs:
-            mlx:   gc_sleep (float, default 2.0)
-                   aggressive_cleanup (bool, default True)
-            ollama: host (str, default "http://localhost:11434")
-                    gc_sleep (float, default 2.0)
-    """
-    if backend == "mlx":
-        return MLXModelManager(
-            gc_sleep=kwargs.get("gc_sleep", 2.0),
-            aggressive_cleanup=kwargs.get("aggressive_cleanup", True),
-        )
-    elif backend == "ollama":
-        return OllamaModelManager(
-            host=kwargs.get("host", "http://localhost:11434"),
-            gc_sleep=kwargs.get("gc_sleep", 2.0),
-        )
-    else:
-        raise ValueError(f"Unknown backend: '{backend}'. Valid options: 'mlx', 'ollama'.")
+    def __init__(self, device_ram_gb: float = 32.0, ollama_host: str = "http://localhost:11434"):
+        self.device_ram_gb = device_ram_gb
+        self.mlx = MLXModelManager()
+        self.ollama = OllamaModelManager(host=ollama_host)
+        self._active_backend: Optional[BaseModelManager] = None
+
+    def load(self, model_key: str, config: ModelConfig) -> bool:
+        """Load a model using the appropriate backend."""
+        if config.backend == "mlx" and MLX_AVAILABLE:
+            success = self.mlx.load(model_key, config)
+            self._active_backend = self.mlx if success else None
+            return success
+        elif config.backend == "ollama":
+            success = self.ollama.load(model_key, config)
+            self._active_backend = self.ollama if success else None
+            return success
+        else:
+            logger.error("Unknown backend: %s", config.backend)
+            return False
+
+    def unload(self) -> None:
+        """Unload any loaded model."""
+        if self._active_backend:
+            self._active_backend.unload()
+            self._active_backend = None
+
+    def generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        """Generate text using the loaded model."""
+        if self._active_backend is None:
+            raise RuntimeError("No model loaded. Call load() first.")
+        return self._active_backend.generate(prompt, max_tokens)
+
+    def is_loaded(self) -> bool:
+        return self._active_backend is not None
+
+    def get_memory_usage(self) -> Dict[str, float]:
+        mlx_mem = self.mlx.get_memory_usage()
+        return mlx_mem
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.unload()
+        return False
