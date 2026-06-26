@@ -1,4 +1,4 @@
-# Brain Loader v3
+# Port
 
 A portable, hardware-aware agentic AI orchestration system.
 Pure Python coordinator · Single hot-swap model slot · Adaptive planning loop.
@@ -23,7 +23,7 @@ Pure Python coordinator · Single hot-swap model slot · Adaptive planning loop.
 
 ## What This Is
 
-Brain Loader runs a long-horizon agentic task loop entirely on local hardware.
+Port runs a long-horizon agentic task loop entirely on local hardware.
 
 - A **Brain** model creates a 30–80 task plan and adapts it after every task.
 - **Specialist** models (coder, researcher, writer, critic, math) execute each task.
@@ -152,7 +152,7 @@ Write next task subtasks. Update this file.
 ## File Structure
 
 ```
-brain_loader/
+port/
 ├── main.py
 ├── config.yaml
 ├── requirements_mlx.txt
@@ -179,7 +179,7 @@ brain_loader/
 
 ```bash
 # 1. Create project directory
-mkdir brain_loader_v3 && cd brain_loader_v3
+mkdir port && cd port
 # (copy all files here)
 
 # 2. Virtual environment
@@ -218,7 +218,7 @@ ollama pull qwen2.5-coder:32b
 ollama serve
 
 # 4. Create project directory
-mkdir brain_loader_v3 && cd brain_loader_v3
+mkdir port && cd port
 # (copy all files here)
 
 # 5. Virtual environment
